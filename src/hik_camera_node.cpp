@@ -81,10 +81,20 @@ bool HikCamera::connectCamera()
         MV_CC_DEVICE_INFO* pDeviceInfo = device_list_.pDeviceInfo[i];
         
         if (pDeviceInfo->nTLayerType == MV_GIGE_DEVICE) {
-            // 千兆网相机
-            char* ip = pDeviceInfo->SpecialInfo.stGigEInfo.chCurrentIp;
-            char* serial = pDeviceInfo->SpecialInfo.stGigEInfo.chSerialNumber;
+            // 千兆网相机 - 修复IP地址和序列号获取
+            unsigned int ip_addr = pDeviceInfo->SpecialInfo.stGigEInfo.nCurrentIp;
+            // 将IP地址从整数格式转换为点分十进制
+            std::string ip = std::to_string((ip_addr >> 0) & 0xFF) + "." +
+                           std::to_string((ip_addr >> 8) & 0xFF) + "." +
+                           std::to_string((ip_addr >> 16) & 0xFF) + "." +
+                           std::to_string((ip_addr >> 24) & 0xFF);
             
+            // 正确转换序列号类型
+            std::string serial(reinterpret_cast<const char*>(
+                pDeviceInfo->SpecialInfo.stGigEInfo.chSerialNumber));
+            
+            RCLCPP_DEBUG(this->get_logger(), "Checking camera IP: %s, Serial: %s", 
+                        ip.c_str(), serial.c_str());
             if ((!camera_ip_.empty() && std::string(ip) == camera_ip_) ||
                 (!camera_serial_.empty() && std::string(serial) == camera_serial_)) {
                 selected_index = i;
@@ -94,8 +104,11 @@ bool HikCamera::connectCamera()
             }
         } else if (pDeviceInfo->nTLayerType == MV_USB_DEVICE) {
             // USB相机
-            char* serial = pDeviceInfo->SpecialInfo.stUsb3VInfo.chSerialNumber;
+            // USB相机 - 修复序列号获取
+            std::string serial(reinterpret_cast<const char*>(
+                pDeviceInfo->SpecialInfo.stUsb3VInfo.chSerialNumber));
             
+            RCLCPP_DEBUG(this->get_logger(), "Checking USB camera Serial: %s", serial.c_str());
             if (!camera_serial_.empty() && std::string(serial) == camera_serial_) {
                 selected_index = i;
                 found = true;
@@ -174,11 +187,11 @@ void HikCamera::startStreaming()
         streaming_ = true;
         reconnect_flag_ = false;
         
+        capture_thread_ = std::thread(&HikCamera::imageCaptureThread, this);
         if (device_list_.nDeviceNum > 0) {
-            capture_thread_ = std::thread(&HikCamera::imageCaptureThread, this);
             RCLCPP_INFO(this->get_logger(), "Image streaming started");
         } else {
-            RCLCPP_INFO(this->get_logger(), "Running in simulation mode - no image streaming");
+            RCLCPP_INFO(this->get_logger(), "Running in simulation mode");
         }
     }
 }
@@ -280,8 +293,7 @@ void HikCamera::imageCaptureThread()
                     if (reconnectCamera()) {
                         RCLCPP_INFO(this->get_logger(), "Reconnection successful");
                         reconnect_flag_ = false;
-                        consecutive_errors = 0;
-                        
+                
                         // 重新开始取流
                         int nRet = MV_CC_StartGrabbing(camera_handle_);
                         if (nRet != MV_OK) {
@@ -295,6 +307,7 @@ void HikCamera::imageCaptureThread()
             
             // 短暂休眠后继续尝试
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            
         }
     }
     
